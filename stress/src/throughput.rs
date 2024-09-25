@@ -12,6 +12,19 @@ const BATCH_SIZE: u64 = 1000;
 
 static STOP: AtomicBool = AtomicBool::new(false);
 
+pub trait ThroughputTest: Send + Sync {
+    fn run(&self) {}
+}
+
+impl<T> ThroughputTest for T
+where
+    T: Fn() + Send + Sync,
+{
+    fn run(&self) {
+        (&self)()
+    }
+}
+
 #[repr(C)]
 #[derive(Default)]
 struct WorkerStats {
@@ -23,7 +36,7 @@ struct WorkerStats {
 
 pub fn test_throughput<F>(func: F)
 where
-    F: Fn() + Sync + Send + 'static,
+    F: ThroughputTest + 'static,
 {
     ctrlc::set_handler(move || {
         STOP.store(true, Ordering::SeqCst);
@@ -130,7 +143,7 @@ where
         let func_arc_clone = Arc::clone(&func_arc);
         let handle = thread::spawn(move || loop {
             for _ in 0..BATCH_SIZE {
-                func_arc_clone();
+                func_arc_clone.run();
             }
             worker_stats_shared[thread_index]
                 .count

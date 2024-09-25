@@ -53,6 +53,8 @@ pub(crate) struct SdkMeter {
 
 impl SdkMeter {
     pub(crate) fn new(scope: Scope, pipes: Arc<Pipelines>) -> Self {
+        println!("*********************** scope: {scope:?}");
+        println!("*********************** pipes: {pipes:?}");
         let view_cache = Default::default();
 
         SdkMeter {
@@ -262,7 +264,10 @@ impl InstrumentProvider for SdkMeter {
             builder.description,
             builder.unit,
         )
-        .map(|i| Gauge::new(Arc::new(i)))
+        .map(|i| {
+            println!("**************** u64_gauge: {:?}", i.measures.len());
+            Gauge::new(Arc::new(i))
+        })
     }
 
     fn f64_gauge(&self, builder: InstrumentBuilder<'_, Gauge<f64>>) -> Result<Gauge<f64>> {
