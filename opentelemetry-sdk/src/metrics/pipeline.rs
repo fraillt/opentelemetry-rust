@@ -12,9 +12,7 @@ use crate::{
         aggregation,
         data::{Metric, ResourceMetrics, ScopeMetrics},
         instrument::{Instrument, InstrumentId, InstrumentKind, Stream},
-        internal,
-        internal::AggregateBuilder,
-        internal::Number,
+        internal::{self, AggregateBuilder, Number},
         reader::{MetricReader, SdkProducer},
         view::View,
         MetricError, MetricResult,
@@ -130,6 +128,65 @@ impl SdkProducer for Pipeline {
             if instruments.len() > sm.metrics.len() {
                 sm.metrics.reserve(instruments.len() - sm.metrics.len());
             }
+
+            // fn boo(_data: Option<&mut dyn crate::metrics::data::Aggregation>) -> Box<dyn crate::metrics::data::Aggregation> {
+            //     todo!()
+            // }
+
+            // let mut j = 0;
+            // for inst in instruments {           
+            //     let mut m = sm.metrics.get_mut(j);
+            //     let res = boo(m.as_mut().map(|m| m.data.as_mut()));
+            //     if !res.is_empty() {
+            //         match m {
+            //             Some(existing) => {
+            //                 existing.data = boo(Some(existing.data.as_mut()));
+            //                 if existing.data.is_empty() {
+            //                     continue;
+            //                 }
+            //                 existing.name.clone_from(&inst.name);
+            //                 existing.description.clone_from(&inst.description);
+            //                 existing.unit.clone_from(&inst.unit);                        
+            //             },
+            //             None => {
+            //                 let data = boo(None);
+            //                 if data.is_empty() {
+            //                     continue;
+            //                 }
+            //                 sm.metrics.push(Metric {
+            //                     name: inst.name.clone(),
+            //                     description: inst.description.clone(),
+            //                     unit: inst.unit.clone(),
+            //                     data,
+            //                 })
+            //             },
+            //         };
+            //     }
+            //     match sm.metrics.get_mut(j) {
+            //         Some(existing) => {
+            //             existing.data = boo(Some(existing.data.as_mut()));
+            //             if existing.data.is_empty() {
+            //                 continue;
+            //             }
+            //             existing.name.clone_from(&inst.name);
+            //             existing.description.clone_from(&inst.description);
+            //             existing.unit.clone_from(&inst.unit);                        
+            //         },
+            //         None => {
+            //             let data = boo(None);
+            //             if data.is_empty() {
+            //                 continue;
+            //             }
+            //             sm.metrics.push(Metric {
+            //                 name: inst.name.clone(),
+            //                 description: inst.description.clone(),
+            //                 unit: inst.unit.clone(),
+            //                 data,
+            //             })
+            //         },
+            //     }
+            //     j += 1;
+            // }            
 
             let mut j = 0;
             for inst in instruments {

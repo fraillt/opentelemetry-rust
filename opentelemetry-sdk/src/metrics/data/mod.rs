@@ -53,6 +53,12 @@ pub trait Aggregation: fmt::Debug + any::Any + Send + Sync {
     fn as_mut(&mut self) -> &mut dyn any::Any;
 }
 
+/// Allows to access array of `DataPoint` for specific [`Aggregation`]
+pub trait AggregationDataPoint {
+    type DataPoint;
+    fn points(&mut self) -> &mut Vec<Self::DataPoint>;
+}
+
 /// A measurement of the current value of an instrument.
 #[derive(Debug)]
 pub struct Gauge<T> {
@@ -66,6 +72,14 @@ impl<T: fmt::Debug + Send + Sync + 'static> Aggregation for Gauge<T> {
     }
     fn as_mut(&mut self) -> &mut dyn any::Any {
         self
+    }
+}
+
+impl<T> AggregationDataPoint for Gauge<T> {
+    type DataPoint = DataPoint<T>;
+
+    fn points(&mut self) -> &mut Vec<Self::DataPoint> {
+        &mut self.data_points
     }
 }
 
@@ -87,8 +101,17 @@ impl<T: fmt::Debug + Send + Sync + 'static> Aggregation for Sum<T> {
     }
     fn as_mut(&mut self) -> &mut dyn any::Any {
         self
+    }    
+}
+
+impl<T> AggregationDataPoint for Sum<T> {
+    type DataPoint = DataPoint<T>;
+
+    fn points(&mut self) -> &mut Vec<Self::DataPoint> {
+        &mut self.data_points
     }
 }
+
 
 /// DataPoint is a single data point in a time series.
 #[derive(Debug, PartialEq)]

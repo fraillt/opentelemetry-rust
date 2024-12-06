@@ -3,10 +3,11 @@ use std::ops::DerefMut;
 use std::vec;
 use std::{sync::Mutex, time::SystemTime};
 
-use crate::metrics::data::{self, Aggregation, DataPoint};
+use crate::metrics::data::{self, DataPoint};
 use crate::metrics::Temporality;
 use opentelemetry::KeyValue;
 
+use super::aggregate::InitAggregationData;
 use super::{Aggregator, AtomicTracker, Number};
 use super::{AtomicallyUpdate, ValueMap};
 
@@ -69,23 +70,9 @@ impl<T: Number> Sum<T> {
 
     pub(crate) fn delta(
         &self,
-        dest: Option<&mut dyn Aggregation>,
-    ) -> (usize, Option<Box<dyn Aggregation>>) {
+        data_points: &mut Vec<data::DataPoint<T>>,
+    ) {
         let t = SystemTime::now();
-
-        let s_data = dest.and_then(|d| d.as_mut().downcast_mut::<data::Sum<T>>());
-        let mut new_agg = if s_data.is_none() {
-            Some(data::Sum {
-                data_points: vec![],
-                temporality: Temporality::Delta,
-                is_monotonic: self.monotonic,
-            })
-        } else {
-            None
-        };
-        let s_data = s_data.unwrap_or_else(|| new_agg.as_mut().expect("present if s_data is none"));
-        s_data.temporality = Temporality::Delta;
-        s_data.is_monotonic = self.monotonic;
 
         let prev_start = self
             .start
@@ -93,54 +80,51 @@ impl<T: Number> Sum<T> {
             .map(|mut start| replace(start.deref_mut(), t))
             .unwrap_or(t);
         self.value_map
-            .collect_and_reset(&mut s_data.data_points, |attributes, aggr| DataPoint {
+            .collect_and_reset(data_points, |attributes, aggr| DataPoint {
                 attributes,
                 start_time: prev_start,
                 time: t,
                 value: aggr.value.get_value(),
                 exemplars: vec![],
             });
-
-        (
-            s_data.data_points.len(),
-            new_agg.map(|a| Box::new(a) as Box<_>),
-        )
     }
 
     pub(crate) fn cumulative(
         &self,
-        dest: Option<&mut dyn Aggregation>,
-    ) -> (usize, Option<Box<dyn Aggregation>>) {
+        data_points: &mut Vec<data::DataPoint<T>>,
+    ) {
+
         let t = SystemTime::now();
-
-        let s_data = dest.and_then(|d| d.as_mut().downcast_mut::<data::Sum<T>>());
-        let mut new_agg = if s_data.is_none() {
-            Some(data::Sum {
-                data_points: vec![],
-                temporality: Temporality::Cumulative,
-                is_monotonic: self.monotonic,
-            })
-        } else {
-            None
-        };
-        let s_data = s_data.unwrap_or_else(|| new_agg.as_mut().expect("present if s_data is none"));
-        s_data.temporality = Temporality::Cumulative;
-        s_data.is_monotonic = self.monotonic;
-
         let prev_start = self.start.lock().map(|start| *start).unwrap_or(t);
 
         self.value_map
-            .collect_readonly(&mut s_data.data_points, |attributes, aggr| DataPoint {
+            .collect_readonly(data_points, |attributes, aggr| DataPoint {
                 attributes,
                 start_time: prev_start,
                 time: t,
                 value: aggr.value.get_value(),
                 exemplars: vec![],
             });
+    }
+}
 
-        (
-            s_data.data_points.len(),
-            new_agg.map(|a| Box::new(a) as Box<_>),
-        )
+impl<T> InitAggregationData for Sum<T>
+where
+    T: Number,
+{
+    type Aggr = data::Sum<T>;
+
+    fn create_new(&self, temporality: Temporality) -> Self::Aggr {
+        data::Sum {
+            data_points: vec![],
+            temporality,
+            is_monotonic: self.monotonic,
+        }
+    }
+
+    fn init_existing(&self, existing: &mut Self::Aggr, temporality: Temporality) {
+        existing.is_monotonic = self.monotonic;
+        existing.temporality = temporality;
+        existing.data_points.clear();
     }
 }

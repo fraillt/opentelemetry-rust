@@ -1,9 +1,13 @@
-use std::{marker, sync::Arc};
+use std::{
+    marker,
+    ops::{Deref, DerefMut},
+    sync::Arc,
+};
 
 use opentelemetry::KeyValue;
 
 use crate::metrics::{
-    data::{Aggregation, Gauge},
+    data::{Aggregation, AggregationDataPoint, Gauge},
     Temporality,
 };
 
@@ -53,6 +57,56 @@ where
 {
     fn call(&self, dest: Option<&mut dyn Aggregation>) -> (usize, Option<Box<dyn Aggregation>>) {
         self(dest)
+    }
+}
+
+pub(crate) trait InitAggregationData {
+    type Aggr: AggregationDataPoint;    
+    fn create_new(&self, temporality: Temporality) -> Self::Aggr;
+    fn init_existing(&self, existing: &mut Self::Aggr, temporality: Temporality);    
+}
+
+pub(crate) enum AggregationData<'a, Aggr> {
+    Existing(&'a mut Aggr),
+    New(Aggr),
+}
+
+impl<'a, Aggr> AggregationData<'a, Aggr>
+where
+    Aggr: Aggregation,
+{
+    pub(crate) fn init(
+        init: &impl InitAggregationData<Aggr = Aggr>,
+        temporality: Temporality,
+        existing: Option<&'a mut dyn Aggregation>,
+    ) -> Self {
+        match existing.and_then(|aggr| aggr.as_mut().downcast_mut::<Aggr>()) {
+            Some(existing) => {
+                init.init_existing(existing, temporality);
+                AggregationData::Existing(existing)
+            }
+            None => AggregationData::New(init.create_new(temporality)),
+        }
+    }
+}
+
+impl<'a, Aggr> Deref for AggregationData<'a, Aggr> {
+    type Target = Aggr;
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            AggregationData::Existing(existing) => *existing,
+            AggregationData::New(new) => new,
+        }
+    }
+}
+
+impl<'a, Aggr> DerefMut for AggregationData<'a, Aggr> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        match self {
+            AggregationData::Existing(existing) => *existing,
+            AggregationData::New(new) => new,
+        }
     }
 }
 
@@ -154,9 +208,20 @@ impl<T: Number> AggregateBuilder<T> {
 
         (
             self.filter(move |n, a: &[KeyValue]| s.measure(n, a)),
-            move |dest: Option<&mut dyn Aggregation>| match t {
-                Some(Temporality::Delta) => agg_sum.delta(dest),
-                _ => agg_sum.cumulative(dest),
+            move |dest: Option<&mut dyn Aggregation>| {
+                let data = AggregationData::init(agg_sum.as_ref(), t.unwrap(), dest);
+                match t {
+                    Some(Temporality::Delta) => agg_sum.delta(&mut data.data_points),
+                    _ => agg_sum.cumulative(&mut data.data_points),
+                };
+                let len = if res.is_empty() { 0 } else { 1 };
+                (
+                    len,
+                    match res {
+                        AggregationData::Existing(_) => None,
+                        AggregationData::New(x) => Some(Box::new(x) as Box<dyn Aggregation>),
+                    },
+                )
             },
         )
     }
