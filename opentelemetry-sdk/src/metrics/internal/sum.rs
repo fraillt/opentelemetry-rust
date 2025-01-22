@@ -1,12 +1,17 @@
+use std::marker::PhantomData;
+
 use crate::metrics::data::{self, Aggregation, SumDataPoint};
 use crate::metrics::Temporality;
 use opentelemetry::KeyValue;
 
 use super::aggregate::{AggregateTimeInitiator, AttributeSetFilter};
-use super::{Aggregator, AtomicTracker, ComputeAggregation, Measure, Number};
+use super::{
+    AggregationCollect, AggregationMeasure, Aggregator, AtomicTracker, ComputeAggregation, Measure,
+    Number,
+};
 use super::{AtomicallyUpdate, ValueMap};
 
-struct Increment<T>
+pub(crate) struct Increment<T>
 where
     T: AtomicallyUpdate<T>,
 {
@@ -159,6 +164,77 @@ where
         match self.temporality {
             Temporality::Delta => self.delta(dest),
             _ => self.cumulative(dest),
+        }
+    }
+}
+
+pub(crate) struct SumNew<T> {
+    pub(crate) monotonic: bool,
+    pub(crate) _marker: PhantomData<T>,
+}
+
+impl<T> SumNew<T> {
+    pub(crate) fn new(monotonic: bool) -> Self {
+        Self {
+            monotonic,
+            _marker: Default::default(),
+        }
+    }
+}
+
+impl<T> AggregationMeasure<T> for SumNew<T>
+where
+    T: Number,
+{
+    type Aggr = Increment<T>;
+
+    fn precompute(&self, value: T) -> <Self::Aggr as Aggregator>::PreComputedValue {
+        value
+    }
+}
+
+impl<T> AggregationCollect for SumNew<T>
+where
+    T: Number,
+{
+    type Aggr2 = Increment<T>;
+    type Aggr = data::Sum<T>;
+
+    fn create_new(
+        &self,
+        temporality: Temporality,
+        time: super::aggregate::AggregateTime,
+    ) -> Self::Aggr {
+        data::Sum {
+            data_points: vec![],
+            start_time: time.start,
+            time: time.current,
+            temporality,
+            is_monotonic: self.monotonic,
+        }
+    }
+
+    fn reset_existing(
+        &self,
+        existing: &mut Self::Aggr,
+        temporality: Temporality,
+        time: super::aggregate::AggregateTime,
+    ) {
+        existing.data_points.clear();
+        existing.start_time = time.start;
+        existing.time = time.current;
+        existing.temporality = temporality;
+        existing.is_monotonic = self.monotonic;
+    }
+
+    fn build_create_points_fn(
+        &self,
+    ) -> impl FnMut(Vec<KeyValue>, &Self::Aggr2) -> <Self::Aggr as data::AggregationDataPoints>::DataPoint
+    {
+        |attributes, aggr| SumDataPoint {
+            attributes,
+            value: aggr.value.get_value(),
+            exemplars: vec![],
         }
     }
 }
