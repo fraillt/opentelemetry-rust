@@ -331,7 +331,7 @@ impl<E: PushMetricExporter, RT: Runtime> PeriodicReaderWorker<E, RT> {
 }
 
 impl<E: PushMetricExporter> MetricReader for PeriodicReader<E> {
-    fn register_pipeline(&self, pipeline: Weak<Pipeline>) {
+    fn register_pipeline(&mut self, pipeline: Weak<Pipeline>) {
         let mut inner = match self.inner.lock() {
             Ok(guard) => guard,
             Err(_) => return,

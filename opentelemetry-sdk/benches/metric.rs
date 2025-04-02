@@ -1,5 +1,5 @@
 use rand::Rng;
-use std::sync::{Arc, Weak};
+use std::sync::{Arc, RwLock, Weak};
 
 use criterion::{criterion_group, criterion_main, Bencher, Criterion};
 use opentelemetry::{
@@ -17,27 +17,42 @@ use opentelemetry_sdk::{
 };
 
 #[derive(Clone, Debug)]
-struct SharedReader(Arc<dyn MetricReader>);
+struct SharedReader(Arc<RwLock<dyn MetricReader>>);
+
+impl SharedReader {
+    fn new<MR>(reader: MR) -> Self
+    where
+        MR: MetricReader,
+    {
+        Self(Arc::new(RwLock::new(reader)))
+    }
+}
 
 impl MetricReader for SharedReader {
-    fn register_pipeline(&self, pipeline: Weak<Pipeline>) {
-        self.0.register_pipeline(pipeline)
+    fn register_pipeline(&mut self, pipeline: Weak<Pipeline>) {
+        self.0
+            .write()
+            .expect("Nothing should panic")
+            .register_pipeline(pipeline)
     }
 
     fn collect(&self, rm: &mut ResourceMetrics) -> MetricResult<()> {
-        self.0.collect(rm)
+        self.0.read().expect("Nothing should panic").collect(rm)
     }
 
     fn force_flush(&self) -> OTelSdkResult {
-        self.0.force_flush()
+        self.0.read().expect("Nothing should panic").force_flush()
     }
 
     fn shutdown(&self) -> OTelSdkResult {
-        self.0.shutdown()
+        self.0.read().expect("Nothing should panic").shutdown()
     }
 
     fn temporality(&self, kind: InstrumentKind) -> Temporality {
-        self.0.temporality(kind)
+        self.0
+            .read()
+            .expect("Nothing should panic")
+            .temporality(kind)
     }
 }
 
@@ -111,13 +126,13 @@ impl MetricReader for SharedReader {
 //                         time:   [726.87 ns 736.52 ns 747.09 ns]
 fn bench_counter(view: Option<Box<dyn View>>, temporality: &str) -> (SharedReader, Counter<u64>) {
     let rdr = if temporality == "cumulative" {
-        SharedReader(Arc::new(ManualReader::builder().build()))
+        SharedReader::new(ManualReader::builder().build())
     } else {
-        SharedReader(Arc::new(
+        SharedReader::new(
             ManualReader::builder()
                 .with_temporality(Temporality::Delta)
                 .build(),
-        ))
+        )
     };
     let mut builder = SdkMeterProvider::builder().with_reader(rdr.clone());
     if let Some(view) = view {
@@ -286,7 +301,7 @@ fn bench_histogram(bound_count: usize) -> (SharedReader, Histogram<u64>) {
         .unwrap(),
     );
 
-    let r = SharedReader(Arc::new(ManualReader::default()));
+    let r = SharedReader::new(ManualReader::default());
     let mut builder = SdkMeterProvider::builder().with_reader(r.clone());
     if let Some(view) = view {
         builder = builder.with_view(view);
@@ -327,7 +342,7 @@ fn histograms(c: &mut Criterion) {
 }
 
 fn benchmark_collect_histogram(b: &mut Bencher, n: usize) {
-    let r = SharedReader(Arc::new(ManualReader::default()));
+    let r = SharedReader::new(ManualReader::default());
     let mtr = SdkMeterProvider::builder()
         .with_reader(r.clone())
         .build()

@@ -36,7 +36,6 @@ use super::{Aggregation, Temporality};
 #[doc(hidden)]
 pub struct Pipeline {
     pub(crate) resource: Resource,
-    reader: Box<dyn MetricReader>,
     views: Vec<Arc<dyn View>>,
     inner: Mutex<PipelineInner>,
 }
@@ -87,16 +86,6 @@ impl Pipeline {
             .inner
             .lock()
             .map(|mut inner| inner.callbacks.push(callback));
-    }
-
-    /// Send accumulated telemetry
-    fn force_flush(&self) -> OTelSdkResult {
-        self.reader.force_flush()
-    }
-
-    /// Shut down pipeline
-    fn shutdown(&self) -> OTelSdkResult {
-        self.reader.shutdown()
     }
 }
 
@@ -212,17 +201,25 @@ struct Inserter<T> {
     views: Arc<Mutex<HashMap<Cow<'static, str>, InstrumentId>>>,
 
     pipeline: Arc<Pipeline>,
+
+    // only used for `temporality`
+    reader: Arc<dyn MetricReader>,
 }
 
 impl<T> Inserter<T>
 where
     T: Number,
 {
-    fn new(p: Arc<Pipeline>, vc: Arc<Mutex<HashMap<Cow<'static, str>, InstrumentId>>>) -> Self {
+    fn new(
+        reader: Arc<dyn MetricReader>,
+        pipeline: Arc<Pipeline>,
+        views: Arc<Mutex<HashMap<Cow<'static, str>, InstrumentId>>>,
+    ) -> Self {
         Inserter {
             aggregators: Default::default(),
-            views: vc,
-            pipeline: Arc::clone(&p),
+            views,
+            pipeline,
+            reader,
         }
     }
 
@@ -385,7 +382,7 @@ where
                 .clone()
                 .map(|allowed| Arc::new(move |kv: &KeyValue| allowed.contains(&kv.key)) as Arc<_>);
 
-            let b = AggregateBuilder::new(self.pipeline.reader.temporality(kind), filter);
+            let b = AggregateBuilder::new(self.reader.temporality(kind), filter);
             let AggregateFns { measure, collect } = match aggregate_fn(b, &agg, kind) {
                 Ok(Some(inst)) => inst,
                 other => return other.map(|fs| fs.map(|inst| inst.measure)), // Drop aggregator or error
@@ -612,9 +609,15 @@ fn is_aggregator_compatible(
     }
 }
 
+#[derive(Debug)]
+pub(crate) struct PipelineWithReader {
+    pub(crate) reader: Arc<dyn MetricReader>,
+    pub(crate) pipeline: Arc<Pipeline>,
+}
+
 /// The group of pipelines connecting Readers with instrument measurement.
 #[derive(Clone, Debug)]
-pub(crate) struct Pipelines(pub(crate) Vec<Arc<Pipeline>>);
+pub(crate) struct Pipelines(pub(crate) Vec<Arc<PipelineWithReader>>);
 
 impl Pipelines {
     pub(crate) fn new(
@@ -623,15 +626,17 @@ impl Pipelines {
         views: Vec<Arc<dyn View>>,
     ) -> Self {
         let mut pipes = Vec::with_capacity(readers.len());
-        for r in readers {
-            let p = Arc::new(Pipeline {
+        for mut reader in readers {
+            let pipeline = Arc::new(Pipeline {
                 resource: res.clone(),
-                reader: r,
                 views: views.clone(),
                 inner: Default::default(),
             });
-            p.reader.register_pipeline(Arc::downgrade(&p));
-            pipes.push(p);
+            reader.register_pipeline(Arc::downgrade(&pipeline));
+            pipes.push(Arc::new(PipelineWithReader {
+                reader: reader.into(),
+                pipeline,
+            }));
         }
 
         Pipelines(pipes)
@@ -643,7 +648,7 @@ impl Pipelines {
     {
         let cb = Arc::new(callback);
         for pipe in &self.0 {
-            pipe.add_callback(cb.clone())
+            pipe.pipeline.add_callback(cb.clone())
         }
     }
 
@@ -651,7 +656,7 @@ impl Pipelines {
     pub(crate) fn force_flush(&self) -> OTelSdkResult {
         let mut errs = vec![];
         for pipeline in &self.0 {
-            if let Err(err) = pipeline.force_flush() {
+            if let Err(err) = pipeline.reader.force_flush() {
                 errs.push(err);
             }
         }
@@ -667,7 +672,7 @@ impl Pipelines {
     pub(crate) fn shutdown(&self) -> OTelSdkResult {
         let mut errs = vec![];
         for pipeline in &self.0 {
-            if let Err(err) = pipeline.shutdown() {
+            if let Err(err) = pipeline.reader.shutdown() {
                 errs.push(err);
             }
         }
@@ -700,7 +705,13 @@ where
         let inserters = pipelines
             .0
             .iter()
-            .map(|pipe| Inserter::new(Arc::clone(pipe), Arc::clone(&view_cache)))
+            .map(|pipe| {
+                Inserter::new(
+                    pipe.reader.clone(),
+                    pipe.pipeline.clone(),
+                    view_cache.clone(),
+                )
+            })
             .collect();
 
         Resolver { inserters }

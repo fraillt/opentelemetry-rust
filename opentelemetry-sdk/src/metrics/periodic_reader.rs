@@ -125,16 +125,22 @@ where
 /// # }
 /// ```
 pub struct PeriodicReader<E: PushMetricExporter> {
-    inner: Arc<PeriodicReaderInner<E>>,
+    state: PeriodicReaderState<E>,
+    exporter_temporality: Temporality,
 }
 
-impl<E: PushMetricExporter> Clone for PeriodicReader<E> {
-    fn clone(&self) -> Self {
-        Self {
-            inner: Arc::clone(&self.inner),
-        }
-    }
+enum PeriodicReaderState<E: PushMetricExporter> {
+    Init(Option<PeriodicReaderInit<E>>),
+    Started(PeriodicReaderStarted),
 }
+
+// impl<E: PushMetricExporter> Clone for PeriodicReader<E> {
+//     fn clone(&self) -> Self {
+//         Self {
+//             inner: Arc::clone(&self.inner),
+//         }
+//     }
+// }
 
 impl<E: PushMetricExporter> PeriodicReader<E> {
     /// Configuration options for a periodic reader with own thread
@@ -143,17 +149,119 @@ impl<E: PushMetricExporter> PeriodicReader<E> {
     }
 
     fn new(exporter: E, interval: Duration) -> Self {
+        Self {
+            exporter_temporality: exporter.temporality(),
+            state: PeriodicReaderState::Init(Some(PeriodicReaderInit { exporter, interval })),
+        }
+    }
+}
+
+impl<E: PushMetricExporter> fmt::Debug for PeriodicReader<E> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PeriodicReader").finish()
+    }
+}
+
+struct PeriodicReaderInit<E: PushMetricExporter> {
+    exporter: E,
+    interval: Duration,
+}
+
+struct PeriodicReaderStarted {
+    message_sender: mpsc::Sender<Message>,
+    producer: Arc<Mutex<Weak<dyn SdkProducer>>>,
+}
+
+struct PeriodicReaderRunning<E: PushMetricExporter> {
+    exporter: E,
+    producer: Arc<Mutex<Weak<dyn SdkProducer>>>,
+}
+
+impl<E: PushMetricExporter> PeriodicReaderRunning<E> {
+    fn collect(&self, rm: &mut ResourceMetrics) -> MetricResult<()> {
+        let producer = self.producer.lock().expect("lock poisoned");
+        producer
+            .upgrade()
+            .ok_or_else(|| MetricError::Other("pipeline is dropped".into()))?
+            .produce(rm)?;
+        Ok(())
+    }
+
+    fn collect_and_export(&self) -> OTelSdkResult {
+        // TODO: Reuse the internal vectors. Or refactor to avoid needing any
+        // owned data structures to be passed to exporters.
+        let mut rm = ResourceMetrics {
+            resource: Resource::empty(),
+            scope_metrics: Vec::new(),
+        };
+
+        let current_time = Instant::now();
+        let collect_result = self.collect(&mut rm);
+        let time_taken_for_collect = current_time.elapsed();
+
+        #[allow(clippy::question_mark)]
+        if let Err(e) = collect_result {
+            otel_warn!(
+                name: "PeriodReaderCollectError",
+                error = format!("{:?}", e)
+            );
+            return Err(OTelSdkError::InternalFailure(e.to_string()));
+        }
+
+        if rm.scope_metrics.is_empty() {
+            otel_debug!(name: "NoMetricsCollected");
+            return Ok(());
+        }
+
+        let metrics_count = rm.scope_metrics.iter().fold(0, |count, scope_metrics| {
+            count + scope_metrics.metrics.len()
+        });
+        otel_debug!(name: "PeriodicReaderMetricsCollected", count = metrics_count, time_taken_in_millis = time_taken_for_collect.as_millis());
+
+        // Relying on futures executor to execute async call.
+        // TODO: Pass timeout to exporter
+        futures_executor::block_on(self.exporter.export(&mut rm))
+    }
+}
+
+#[derive(Debug)]
+enum Message {
+    Flush(Sender<bool>),
+    Shutdown(Sender<bool>),
+}
+
+impl<E: PushMetricExporter> MetricReader for PeriodicReader<E> {
+    fn register_pipeline(&mut self, pipeline: Weak<Pipeline>) {
+        let PeriodicReaderState::Init(init) = &mut self.state else {
+            otel_error!(
+                name: "PeriodReaderRegisterPipelineError",
+                message = "Pipeline already registered.",
+                error = "Pipeline already registered.".to_string()
+            );
+            return;
+        };
+        let Some(PeriodicReaderInit { exporter, interval }) = init.take() else {
+            otel_error!(
+                name: "PeriodReaderRegisterPipelineError",
+                message = "Pipeline already registered.",
+                error = "Pipeline already registered.".to_string()
+            );
+            return;
+        };
+
         let (message_sender, message_receiver): (Sender<Message>, Receiver<Message>) =
             mpsc::channel();
-        let exporter_arc = Arc::new(exporter);
-        let reader = PeriodicReader {
-            inner: Arc::new(PeriodicReaderInner {
-                message_sender,
-                producer: Mutex::new(None),
-                exporter: exporter_arc.clone(),
-            }),
-        };
-        let cloned_reader = reader.clone();
+        let pipeline: Arc<Mutex<Weak<dyn SdkProducer>>> = Arc::new(Mutex::new(pipeline));
+
+        self.state = PeriodicReaderState::Started(PeriodicReaderStarted {
+            message_sender,
+            producer: Arc::clone(&pipeline),
+        });
+
+        let running = Arc::new(PeriodicReaderRunning {
+            producer: pipeline,
+            exporter,
+        });
 
         let result_thread_creation = thread::Builder::new()
             .name("OpenTelemetry.Metrics.PeriodicReader".to_string())
@@ -174,7 +282,7 @@ impl<E: PushMetricExporter> PeriodicReader<E> {
                             otel_debug!(
                                 name: "PeriodReaderThreadExportingDueToFlush"
                             );
-                            let export_result = cloned_reader.collect_and_export();
+                            let export_result = running.collect_and_export();
                             otel_debug!(
                                 name: "PeriodReaderInvokedExport",
                                 export_result = format!("{:?}", export_result)
@@ -230,12 +338,12 @@ impl<E: PushMetricExporter> PeriodicReader<E> {
                         Ok(Message::Shutdown(response_sender)) => {
                             // Perform final export and break out of loop and exit the thread
                             otel_debug!(name: "PeriodReaderThreadExportingDueToShutdown");
-                            let export_result = cloned_reader.collect_and_export();
+                            let export_result = running.collect_and_export();
                             otel_debug!(
                                 name: "PeriodReaderInvokedExport",
                                 export_result = format!("{:?}", export_result)
                             );
-                            let shutdown_result = exporter_arc.shutdown();
+                            let shutdown_result = running.exporter.shutdown();
                             otel_debug!(
                                 name: "PeriodReaderInvokedExporterShutdown",
                                 shutdown_result = format!("{:?}", shutdown_result)
@@ -278,7 +386,7 @@ impl<E: PushMetricExporter> PeriodicReader<E> {
                                 name: "PeriodReaderThreadExportingDueToTimer"
                             );
 
-                            let export_result = cloned_reader.collect_and_export();
+                            let export_result = running.collect_and_export();
                             otel_debug!(
                                 name: "PeriodReaderInvokedExport",
                                 export_result = format!("{:?}", export_result)
@@ -327,91 +435,40 @@ impl<E: PushMetricExporter> PeriodicReader<E> {
                 error = format!("{:?}", e)
             );
         }
-        reader
-    }
-
-    fn collect_and_export(&self) -> OTelSdkResult {
-        self.inner.collect_and_export()
-    }
-}
-
-impl<E: PushMetricExporter> fmt::Debug for PeriodicReader<E> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("PeriodicReader").finish()
-    }
-}
-
-struct PeriodicReaderInner<E: PushMetricExporter> {
-    exporter: Arc<E>,
-    message_sender: mpsc::Sender<Message>,
-    producer: Mutex<Option<Weak<dyn SdkProducer>>>,
-}
-
-impl<E: PushMetricExporter> PeriodicReaderInner<E> {
-    fn register_pipeline(&self, producer: Weak<dyn SdkProducer>) {
-        let mut inner = self.producer.lock().expect("lock poisoned");
-        *inner = Some(producer);
-    }
-
-    fn temporality(&self, _kind: InstrumentKind) -> Temporality {
-        self.exporter.temporality()
     }
 
     fn collect(&self, rm: &mut ResourceMetrics) -> MetricResult<()> {
-        let producer = self.producer.lock().expect("lock poisoned");
-        if let Some(p) = producer.as_ref() {
-            p.upgrade()
-                .ok_or_else(|| MetricError::Other("pipeline is dropped".into()))?
-                .produce(rm)?;
-            Ok(())
-        } else {
+        let PeriodicReaderState::Started(started) = &self.state else {
             otel_warn!(
             name: "PeriodReader.MeterProviderNotRegistered",
             message = "PeriodicReader is not registered with MeterProvider. Metrics will not be collected. \
                    This occurs when a periodic reader is created but not associated with a MeterProvider \
                    by calling `.with_reader(reader)` on MeterProviderBuilder."
             );
-            Err(MetricError::Other("MeterProvider is not registered".into()))
-        }
-    }
-
-    fn collect_and_export(&self) -> OTelSdkResult {
-        // TODO: Reuse the internal vectors. Or refactor to avoid needing any
-        // owned data structures to be passed to exporters.
-        let mut rm = ResourceMetrics {
-            resource: Resource::empty(),
-            scope_metrics: Vec::new(),
+            return Err(MetricError::Other("MeterProvider is not registered".into()));
         };
 
-        let current_time = Instant::now();
-        let collect_result = self.collect(&mut rm);
-        let time_taken_for_collect = current_time.elapsed();
-
-        #[allow(clippy::question_mark)]
-        if let Err(e) = collect_result {
-            otel_warn!(
-                name: "PeriodReaderCollectError",
-                error = format!("{:?}", e)
-            );
-            return Err(OTelSdkError::InternalFailure(e.to_string()));
-        }
-
-        if rm.scope_metrics.is_empty() {
-            otel_debug!(name: "NoMetricsCollected");
-            return Ok(());
-        }
-
-        let metrics_count = rm.scope_metrics.iter().fold(0, |count, scope_metrics| {
-            count + scope_metrics.metrics.len()
-        });
-        otel_debug!(name: "PeriodicReaderMetricsCollected", count = metrics_count, time_taken_in_millis = time_taken_for_collect.as_millis());
-
-        // Relying on futures executor to execute async call.
-        // TODO: Pass timeout to exporter
-        futures_executor::block_on(self.exporter.export(&mut rm))
+        let producer = started.producer.lock().expect("lock poisoned");
+        producer
+            .upgrade()
+            .ok_or_else(|| MetricError::Other("pipeline is dropped".into()))?
+            .produce(rm)?;
+        Ok(())
     }
 
     fn force_flush(&self) -> OTelSdkResult {
+        let PeriodicReaderState::Started(started) = &self.state else {
+            otel_warn!(
+            name: "PeriodReader.MeterProviderNotRegistered",
+            message = "PeriodicReader is not registered with MeterProvider. Metrics will not be collected. \
+                   This occurs when a periodic reader is created but not associated with a MeterProvider \
+                   by calling `.with_reader(reader)` on MeterProviderBuilder."
+            );
+            return Err(OTelSdkError::InternalFailure(
+                "MeterProvider is not registered".into(),
+            ));
+        };
+
         // TODO: Better message for this scenario.
         // Flush and Shutdown called from 2 threads Flush check shutdown
         // flag before shutdown thread sets it. Both threads attempt to send
@@ -426,7 +483,8 @@ impl<E: PushMetricExporter> PeriodicReaderInner<E> {
         // completed. TODO is to see if this message can be improved.
 
         let (response_tx, response_rx) = mpsc::channel();
-        self.message_sender
+        started
+            .message_sender
             .send(Message::Flush(response_tx))
             .map_err(|e| OTelSdkError::InternalFailure(e.to_string()))?;
 
@@ -442,10 +500,19 @@ impl<E: PushMetricExporter> PeriodicReaderInner<E> {
         }
     }
 
+    // TODO: Offer an async version of shutdown so users can await the shutdown
+    // completion, and avoid blocking the thread. The default shutdown on drop
+    // can still use blocking call. If user already explicitly called shutdown,
+    // drop won't call shutdown again.
     fn shutdown(&self) -> OTelSdkResult {
+        let PeriodicReaderState::Started(started) = &self.state else {
+            return Ok(());
+        };
+
         // TODO: See if this is better to be created upfront.
         let (response_tx, response_rx) = mpsc::channel();
-        self.message_sender
+        started
+            .message_sender
             .send(Message::Shutdown(response_tx))
             .map_err(|e| OTelSdkError::InternalFailure(e.to_string()))?;
 
@@ -466,34 +533,6 @@ impl<E: PushMetricExporter> PeriodicReaderInner<E> {
             }
         }
     }
-}
-
-#[derive(Debug)]
-enum Message {
-    Flush(Sender<bool>),
-    Shutdown(Sender<bool>),
-}
-
-impl<E: PushMetricExporter> MetricReader for PeriodicReader<E> {
-    fn register_pipeline(&self, pipeline: Weak<Pipeline>) {
-        self.inner.register_pipeline(pipeline);
-    }
-
-    fn collect(&self, rm: &mut ResourceMetrics) -> MetricResult<()> {
-        self.inner.collect(rm)
-    }
-
-    fn force_flush(&self) -> OTelSdkResult {
-        self.inner.force_flush()
-    }
-
-    // TODO: Offer an async version of shutdown so users can await the shutdown
-    // completion, and avoid blocking the thread. The default shutdown on drop
-    // can still use blocking call. If user already explicitly called shutdown,
-    // drop won't call shutdown again.
-    fn shutdown(&self) -> OTelSdkResult {
-        self.inner.shutdown()
-    }
 
     /// To construct a [MetricReader][metric-reader] when setting up an SDK,
     /// The output temporality (optional), a function of instrument kind.
@@ -503,7 +542,7 @@ impl<E: PushMetricExporter> MetricReader for PeriodicReader<E> {
     ///
     /// [metric-reader]: https://github.com/open-telemetry/opentelemetry-specification/blob/0a78571045ca1dca48621c9648ec3c832c3c541c/specification/metrics/sdk.md#metricreader
     fn temporality(&self, kind: InstrumentKind) -> Temporality {
-        kind.temporality_preference(self.inner.temporality(kind))
+        kind.temporality_preference(self.exporter_temporality)
     }
 }
 
@@ -700,14 +739,7 @@ mod tests {
         assert!(result.is_err());
 
         // Adding reader to meter provider should register the pipeline
-        // TODO: This part might benefit from a different design.
-        let meter_provider = SdkMeterProvider::builder()
-            .with_reader(reader.clone())
-            .build();
-
-        // Now collect and flush should succeed
-        let result = reader.collect(rm);
-        assert!(result.is_ok());
+        let meter_provider = SdkMeterProvider::builder().with_reader(reader).build();
 
         let result = meter_provider.force_flush();
         assert!(result.is_ok());

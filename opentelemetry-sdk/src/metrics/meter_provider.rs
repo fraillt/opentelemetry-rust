@@ -347,6 +347,7 @@ mod tests {
                                expect: Option<&'static str>| {
             assert_eq!(
                 provider.inner.pipes.0[0]
+                    .pipeline
                     .resource
                     .get(&Key::from_static_str(resource_key))
                     .map(|v| v.to_string()),
@@ -356,18 +357,21 @@ mod tests {
         let assert_telemetry_resource = |provider: &super::SdkMeterProvider| {
             assert_eq!(
                 provider.inner.pipes.0[0]
+                    .pipeline
                     .resource
                     .get(&TELEMETRY_SDK_LANGUAGE.into()),
                 Some(Value::from("rust"))
             );
             assert_eq!(
                 provider.inner.pipes.0[0]
+                    .pipeline
                     .resource
                     .get(&TELEMETRY_SDK_NAME.into()),
                 Some(Value::from("opentelemetry"))
             );
             assert_eq!(
                 provider.inner.pipes.0[0]
+                    .pipeline
                     .resource
                     .get(&TELEMETRY_SDK_VERSION.into()),
                 Some(Value::from(env!("CARGO_PKG_VERSION")))
@@ -399,7 +403,13 @@ mod tests {
             )
             .build();
         assert_resource(&custom_meter_provider, SERVICE_NAME, Some("test_service"));
-        assert_eq!(custom_meter_provider.inner.pipes.0[0].resource.len(), 1);
+        assert_eq!(
+            custom_meter_provider.inner.pipes.0[0]
+                .pipeline
+                .resource
+                .len(),
+            1
+        );
 
         temp_env::with_var(
             "OTEL_RESOURCE_ATTRIBUTES",
@@ -418,7 +428,13 @@ mod tests {
                 assert_resource(&env_resource_provider, "key1", Some("value1"));
                 assert_resource(&env_resource_provider, "k3", Some("value2"));
                 assert_telemetry_resource(&env_resource_provider);
-                assert_eq!(env_resource_provider.inner.pipes.0[0].resource.len(), 6);
+                assert_eq!(
+                    env_resource_provider.inner.pipes.0[0]
+                        .pipeline
+                        .resource
+                        .len(),
+                    6
+                );
             },
         );
 
@@ -462,6 +478,7 @@ mod tests {
                 assert_telemetry_resource(&user_provided_resource_config_provider);
                 assert_eq!(
                     user_provided_resource_config_provider.inner.pipes.0[0]
+                        .pipeline
                         .resource
                         .len(),
                     7
@@ -476,7 +493,7 @@ mod tests {
             .with_resource(Resource::empty())
             .build();
 
-        assert_eq!(no_service_name.inner.pipes.0[0].resource.len(), 0)
+        assert_eq!(no_service_name.inner.pipes.0[0].pipeline.resource.len(), 0)
     }
 
     #[test]

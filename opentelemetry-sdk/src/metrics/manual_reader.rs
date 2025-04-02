@@ -73,7 +73,7 @@ impl ManualReader {
 impl MetricReader for ManualReader {
     ///  Register a pipeline which enables the caller to read metrics from the SDK
     ///  on demand.
-    fn register_pipeline(&self, pipeline: Weak<Pipeline>) {
+    fn register_pipeline(&mut self, pipeline: Weak<Pipeline>) {
         let _ = self.inner.lock().map(|mut inner| {
             // Only register once. If producer is already set, do nothing.
             if inner.sdk_producer.is_none() {

@@ -32,7 +32,7 @@ impl Default for TestMetricReader {
 }
 
 impl MetricReader for TestMetricReader {
-    fn register_pipeline(&self, _pipeline: Weak<Pipeline>) {}
+    fn register_pipeline(&mut self, _pipeline: Weak<Pipeline>) {}
 
     fn collect(&self, _rm: &mut ResourceMetrics) -> MetricResult<()> {
         Ok(())

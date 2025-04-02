@@ -24,7 +24,7 @@ pub trait MetricReader: fmt::Debug + Send + Sync + 'static {
     ///
     /// The pipeline argument allows the `MetricReader` to signal the sdk to collect
     /// and send aggregated metric measurements.
-    fn register_pipeline(&self, pipeline: Weak<Pipeline>);
+    fn register_pipeline(&mut self, pipeline: Weak<Pipeline>);
 
     /// Gathers and returns all metric data related to the [MetricReader] from the
     /// SDK and stores it in the provided [ResourceMetrics] reference.
