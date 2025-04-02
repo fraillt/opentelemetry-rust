@@ -122,7 +122,7 @@ impl HasHttpConfig for MetricExporterBuilder<HttpExporterBuilderSet> {
 pub(crate) trait MetricsClient: fmt::Debug + Send + Sync + 'static {
     fn export(
         &self,
-        metrics: &mut ResourceMetrics,
+        metrics: &ResourceMetrics,
     ) -> impl std::future::Future<Output = OTelSdkResult> + Send;
     fn shutdown(&self) -> OTelSdkResult;
 }
@@ -148,7 +148,7 @@ impl Debug for MetricExporter {
 }
 
 impl PushMetricExporter for MetricExporter {
-    async fn export(&self, metrics: &mut ResourceMetrics) -> OTelSdkResult {
+    async fn export(&self, metrics: &ResourceMetrics) -> OTelSdkResult {
         match &self.client {
             #[cfg(feature = "grpc-tonic")]
             SupportedTransportClient::Tonic(client) => client.export(metrics).await,

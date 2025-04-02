@@ -52,7 +52,7 @@ impl TonicMetricsClient {
 }
 
 impl MetricsClient for TonicMetricsClient {
-    async fn export(&self, metrics: &mut ResourceMetrics) -> OTelSdkResult {
+    async fn export(&self, metrics: &ResourceMetrics) -> OTelSdkResult {
         let (mut client, metadata, extensions) = self
             .inner
             .lock()

@@ -550,7 +550,7 @@ mod tests {
     }
 
     impl PushMetricExporter for MetricExporterThatFailsOnlyOnFirst {
-        async fn export(&self, _metrics: &mut ResourceMetrics) -> OTelSdkResult {
+        async fn export(&self, _metrics: &ResourceMetrics) -> OTelSdkResult {
             if self.count.fetch_add(1, Ordering::Relaxed) == 0 {
                 Err(OTelSdkError::InternalFailure("export failed".into()))
             } else {
@@ -577,7 +577,7 @@ mod tests {
     }
 
     impl PushMetricExporter for MockMetricExporter {
-        async fn export(&self, _metrics: &mut ResourceMetrics) -> OTelSdkResult {
+        async fn export(&self, _metrics: &ResourceMetrics) -> OTelSdkResult {
             Ok(())
         }
 
