@@ -23,7 +23,7 @@ use crate::{
 
 use self::internal::AggregateFns;
 
-use super::{Aggregation, Temporality};
+use super::{reader::MetricReaderDynCreate, Aggregation, Temporality};
 
 /// Connects all of the instruments created by a meter provider to a [MetricReader].
 ///
@@ -622,7 +622,7 @@ pub(crate) struct Pipelines(pub(crate) Vec<Arc<PipelineWithReader>>);
 impl Pipelines {
     pub(crate) fn new(
         res: Resource,
-        readers: Vec<Box<dyn MetricReader>>,
+        readers: Vec<Box<dyn MetricReaderDynCreate>>,
         views: Vec<Arc<dyn View>>,
     ) -> Self {
         let mut pipes = Vec::with_capacity(readers.len());
@@ -632,7 +632,11 @@ impl Pipelines {
                 views: views.clone(),
                 inner: Default::default(),
             });
-            reader.register_pipeline(Arc::downgrade(&pipeline));
+            let Ok(reader) = reader.create(Arc::downgrade(&pipeline)) else {
+                // todo print error
+                continue;
+            };
+            // reader.register_pipeline(Arc::downgrade(&pipeline));
             pipes.push(Arc::new(PipelineWithReader {
                 reader: reader.into(),
                 pipeline,

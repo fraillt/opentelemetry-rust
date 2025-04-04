@@ -1,4 +1,6 @@
 //! Interfaces for exporting metrics
+use std::fmt::Debug;
+
 use crate::error::OTelSdkResult;
 
 use crate::metrics::data::ResourceMetrics;
@@ -8,7 +10,7 @@ use super::Temporality;
 /// Exporter handles the delivery of metric data to external receivers.
 ///
 /// This is the final component in the metric push pipeline.
-pub trait PushMetricExporter: Send + Sync + 'static {
+pub trait PushMetricExporter: Debug + Send + Sync + 'static {
     /// Export serializes and transmits metric data to a receiver.
     ///
     /// All retry logic must be contained in this function. The SDK does not

@@ -1,9 +1,35 @@
 //! Interfaces for reading and producing metrics
-use std::{fmt, sync::Weak};
+use std::{fmt::{self, Debug}, sync::Weak};
 
-use crate::{error::OTelSdkResult, metrics::MetricResult};
+use crate::{error::OTelSdkResult, metrics::MetricResult, Resource};
 
-use super::{data::ResourceMetrics, pipeline::Pipeline, InstrumentKind, Temporality};
+use super::{data::ResourceMetrics, exporter::PushMetricExporter, pipeline::Pipeline, InstrumentKind, Temporality};
+
+
+pub trait MetricReaderDynCreate: Debug + 'static {
+    fn create(&mut self, pipeline: Weak<Pipeline>) -> MetricResult<Box<dyn MetricReader>>;
+}
+
+#[derive(Debug)]
+pub struct MetricReaderWrapper<R, E> where R: MetricReaderCreate<E>, E: PushMetricExporter {
+    pub reader_create: Option<R>,
+    pub exporter: Option<E>,
+}
+
+impl <R, E> MetricReaderDynCreate for MetricReaderWrapper<R, E> where R: MetricReaderCreate<E>, E: PushMetricExporter {
+    fn create(&mut self, pipeline: Weak<Pipeline>) -> MetricResult<Box<dyn MetricReader>> {
+        let exporter = self.exporter.take().unwrap();
+        let reader_create = self.reader_create.take().unwrap();
+        reader_create.create(exporter, pipeline).map(|reader| Box::new(reader) as Box<dyn MetricReader>)
+    }
+}
+
+/// fasdf
+pub trait MetricReaderCreate<E>: Debug + 'static where E: PushMetricExporter {
+    type Reader: MetricReader + 'static;    
+    /// fasdfd
+    fn create(self, exporter: E, pipeline: Weak<Pipeline>) -> MetricResult<Self::Reader>;
+}
 
 /// The interface used between the SDK and an exporter.
 ///

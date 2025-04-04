@@ -1,5 +1,5 @@
 use std::{
-    env, fmt,
+    env, fmt::{self, Debug},
     sync::{
         mpsc::{self, Receiver, Sender},
         Arc, Mutex, Weak,
@@ -17,7 +17,7 @@ use crate::{
 };
 
 use super::{
-    data::ResourceMetrics, instrument::InstrumentKind, reader::MetricReader, Pipeline, Temporality,
+    data::ResourceMetrics, instrument::InstrumentKind, reader::{MetricReader, MetricReaderCreate}, Pipeline, Temporality,
 };
 
 const DEFAULT_INTERVAL: Duration = Duration::from_secs(60);
@@ -129,6 +129,18 @@ pub struct PeriodicReader<E: PushMetricExporter> {
     exporter_temporality: Temporality,
 }
 
+#[derive(Debug)]
+pub struct PeriodicReader2 {
+
+}
+
+#[derive(Debug)]
+pub struct PeriodicReaderRunning2<E> where E: PushMetricExporter {
+    exporter: E,
+    producer: Weak<dyn SdkProducer>,
+}
+
+
 enum PeriodicReaderState<E: PushMetricExporter> {
     Init(Option<PeriodicReaderInit<E>>),
     Started(PeriodicReaderStarted),
@@ -228,6 +240,36 @@ impl<E: PushMetricExporter> PeriodicReaderRunning<E> {
 enum Message {
     Flush(Sender<bool>),
     Shutdown(Sender<bool>),
+}
+
+impl<E> MetricReaderCreate<E> for PeriodicReader2 where E: PushMetricExporter {
+    type Reader = PeriodicReaderRunning2<E>;
+    /// fasdfd
+    fn create(self, exporter: E, pipeline: Weak<Pipeline>) -> MetricResult<Self::Reader> {
+        Ok(PeriodicReaderRunning2 { exporter, producer: pipeline })
+    }
+}
+
+impl<E> MetricReader for PeriodicReaderRunning2<E> where E: PushMetricExporter {
+    fn register_pipeline(&mut self, pipeline: Weak<Pipeline>) {
+        todo!()
+    }
+
+    fn collect(&self, rm: &mut ResourceMetrics) -> MetricResult<()> {
+        todo!()
+    }
+
+    fn force_flush(&self) -> OTelSdkResult {
+        todo!()
+    }
+
+    fn shutdown(&self) -> OTelSdkResult {
+        todo!()
+    }
+
+    fn temporality(&self, kind: InstrumentKind) -> Temporality {
+        todo!()
+    }
 }
 
 impl<E: PushMetricExporter> MetricReader for PeriodicReader<E> {

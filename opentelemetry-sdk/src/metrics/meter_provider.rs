@@ -1,10 +1,9 @@
 use core::fmt;
 use std::{
-    collections::HashMap,
-    sync::{
+    collections::HashMap, fmt::Debug, sync::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex,
-    },
+    }
 };
 
 use opentelemetry::{
@@ -17,7 +16,7 @@ use crate::Resource;
 
 use super::{
     exporter::PushMetricExporter, meter::SdkMeter, noop::NoopMeter, pipeline::Pipelines,
-    reader::MetricReader, view::View, PeriodicReader,
+    reader::{MetricReader, MetricReaderCreate, MetricReaderDynCreate, MetricReaderWrapper}, view::View, PeriodicReader, PeriodicReader2,
 };
 
 /// Handles the creation and coordination of [Meter]s.
@@ -221,7 +220,7 @@ impl MeterProvider for SdkMeterProvider {
 #[derive(Default)]
 pub struct MeterProviderBuilder {
     resource: Option<Resource>,
-    readers: Vec<Box<dyn MetricReader>>,
+    readers: Vec<Box<dyn MetricReaderDynCreate>>,
     views: Vec<Arc<dyn View>>,
 }
 
@@ -252,8 +251,11 @@ impl MeterProviderBuilder {
     ///
     /// A [MeterProvider] will export no metrics without [MetricReader]
     /// added.
-    pub fn with_reader<T: MetricReader>(mut self, reader: T) -> Self {
-        self.readers.push(Box::new(reader));
+    pub fn with_reader<E: PushMetricExporter, T: MetricReaderCreate<E>>(mut self, reader: T, exporter: E) -> Self {
+        self.readers.push(Box::new(MetricReaderWrapper {
+            exporter: Some(exporter),
+            reader_create: Some(reader)
+        }));
         self
     }
 
@@ -273,8 +275,11 @@ impl MeterProviderBuilder {
     where
         T: PushMetricExporter,
     {
-        let reader = PeriodicReader::builder(exporter).build();
-        self.readers.push(Box::new(reader));
+        // let reader = PeriodicReader::builder(exporter).build();
+        self.readers.push(Box::new(MetricReaderWrapper {
+            exporter: Some(exporter),
+            reader_create: Some(PeriodicReader2 {})
+        }));
         self
     }
 
