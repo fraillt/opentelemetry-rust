@@ -17,9 +17,11 @@ use crate::{ExporterBuildError, NoExporterBuilderSet};
 use core::fmt;
 use opentelemetry_sdk::error::OTelSdkResult;
 
+use opentelemetry_sdk::metrics::exporter::MetricBatch;
 use opentelemetry_sdk::metrics::{
-    data::ResourceMetrics, exporter::PushMetricExporter, Temporality,
+    exporter::PushMetricExporter, Temporality,
 };
+use opentelemetry_sdk::Resource;
 use std::fmt::{Debug, Formatter};
 use std::time::Duration;
 
@@ -123,7 +125,8 @@ impl HasHttpConfig for MetricExporterBuilder<HttpExporterBuilderSet> {
 pub(crate) trait MetricsClient: fmt::Debug + Send + Sync + 'static {
     fn export(
         &self,
-        metrics: &mut ResourceMetrics,
+        resource: &Resource,
+        batch: MetricBatch<'_>,
     ) -> impl std::future::Future<Output = OTelSdkResult> + Send;
     fn shutdown(&self) -> OTelSdkResult;
 }
@@ -132,6 +135,7 @@ pub(crate) trait MetricsClient: fmt::Debug + Send + Sync + 'static {
 pub struct MetricExporter {
     client: SupportedTransportClient,
     temporality: Temporality,
+    resource: Resource
 }
 
 #[derive(Debug)]
@@ -149,12 +153,12 @@ impl Debug for MetricExporter {
 }
 
 impl PushMetricExporter for MetricExporter {
-    async fn export(&self, metrics: &mut ResourceMetrics) -> OTelSdkResult {
+    async fn export(&self, batch: MetricBatch<'_>,) -> OTelSdkResult {
         match &self.client {
             #[cfg(feature = "grpc-tonic")]
-            SupportedTransportClient::Tonic(client) => client.export(metrics).await,
+            SupportedTransportClient::Tonic(client) => client.export(&self.resource, batch).await,
             #[cfg(any(feature = "http-proto", feature = "http-json"))]
-            SupportedTransportClient::Http(client) => client.export(metrics).await,
+            SupportedTransportClient::Http(client) => client.export(&self.resource, batch).await,
         }
     }
 
@@ -179,6 +183,10 @@ impl PushMetricExporter for MetricExporter {
     fn temporality(&self) -> Temporality {
         self.temporality
     }
+
+    fn set_resource(&mut self, resource: &Resource) {
+        self.resource = resource.clone()
+    }
 }
 
 impl MetricExporter {
@@ -195,6 +203,7 @@ impl MetricExporter {
         Self {
             client: SupportedTransportClient::Tonic(client),
             temporality,
+            resource: Resource::builder_empty().build()
         }
     }
 
@@ -206,6 +215,7 @@ impl MetricExporter {
         Self {
             client: SupportedTransportClient::Http(client),
             temporality,
+            resource: Resource::builder_empty().build()
         }
     }
 }

@@ -6,7 +6,8 @@ use opentelemetry_proto::tonic::collector::metrics::v1::{
     metrics_service_client::MetricsServiceClient, ExportMetricsServiceRequest,
 };
 use opentelemetry_sdk::error::{OTelSdkError, OTelSdkResult};
-use opentelemetry_sdk::metrics::data::ResourceMetrics;
+use opentelemetry_sdk::metrics::exporter::MetricBatch;
+use opentelemetry_sdk::Resource;
 use tonic::{codegen::CompressionEncoding, service::Interceptor, transport::Channel, Request};
 
 use super::BoxInterceptor;
@@ -52,7 +53,9 @@ impl TonicMetricsClient {
 }
 
 impl MetricsClient for TonicMetricsClient {
-    async fn export(&self, metrics: &mut ResourceMetrics) -> OTelSdkResult {
+    async fn export(&self,         resource: &Resource,
+        batch: MetricBatch<'_>,
+) -> OTelSdkResult {
         let (mut client, metadata, extensions) = self
             .inner
             .lock()

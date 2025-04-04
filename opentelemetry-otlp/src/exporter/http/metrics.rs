@@ -4,12 +4,15 @@ use crate::metric::MetricsClient;
 use http::{header::CONTENT_TYPE, Method};
 use opentelemetry::otel_debug;
 use opentelemetry_sdk::error::{OTelSdkError, OTelSdkResult};
-use opentelemetry_sdk::metrics::data::ResourceMetrics;
+use opentelemetry_sdk::metrics::exporter::MetricBatch;
+use opentelemetry_sdk::Resource;
 
 use super::OtlpHttpClient;
 
 impl MetricsClient for OtlpHttpClient {
-    async fn export(&self, metrics: &mut ResourceMetrics) -> OTelSdkResult {
+    async fn export(&self,         resource: &Resource,
+        batch: MetricBatch<'_>,
+) -> OTelSdkResult {
         let client = self
             .client
             .lock()

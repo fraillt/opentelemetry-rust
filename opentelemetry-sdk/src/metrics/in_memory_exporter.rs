@@ -1,16 +1,19 @@
+use opentelemetry::InstrumentationScope;
+
 use crate::error::{OTelSdkError, OTelSdkResult};
 use crate::metrics::data::{
-    ExponentialHistogram, Gauge, Histogram, MetricData, ResourceMetrics, Sum,
+    ExponentialHistogram, Gauge, Histogram, MetricData, Sum,
 };
 use crate::metrics::exporter::PushMetricExporter;
 use crate::metrics::Temporality;
-use crate::InMemoryExporterError;
+use crate::{InMemoryExporterError, Resource};
 use std::collections::VecDeque;
 use std::fmt;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use super::data::{AggregatedMetrics, Metric, ScopeMetrics};
+use super::data::{AggregatedMetrics, Metric};
+use super::exporter::MetricBatch;
 
 /// An in-memory metrics exporter that stores metrics data in memory.
 ///
@@ -59,18 +62,11 @@ use super::data::{AggregatedMetrics, Metric, ScopeMetrics};
 ///  }
 ///# }
 /// ```
+#[derive(Clone)]
 pub struct InMemoryMetricExporter {
-    metrics: Arc<Mutex<VecDeque<ResourceMetrics>>>,
+    metrics: Arc<Mutex<VecDeque<(Metric, InstrumentationScope)>>>,
     temporality: Temporality,
-}
-
-impl Clone for InMemoryMetricExporter {
-    fn clone(&self) -> Self {
-        InMemoryMetricExporter {
-            metrics: self.metrics.clone(),
-            temporality: self.temporality,
-        }
-    }
+    resource: Resource,
 }
 
 impl fmt::Debug for InMemoryMetricExporter {
@@ -127,6 +123,7 @@ impl InMemoryMetricExporterBuilder {
         InMemoryMetricExporter {
             metrics: Arc::new(Mutex::new(VecDeque::new())),
             temporality: self.temporality.unwrap_or_default(),
+            resource: Resource::empty()
         }
     }
 }
@@ -146,13 +143,15 @@ impl InMemoryMetricExporter {
     /// let exporter = InMemoryMetricExporter::default();
     /// let finished_metrics = exporter.get_finished_metrics().unwrap();
     /// ```
-    pub fn get_finished_metrics(&self) -> Result<Vec<ResourceMetrics>, InMemoryExporterError> {
-        let metrics = self
+    pub fn get_finished_metrics(&self) -> Result<Vec<(Metric, InstrumentationScope)>, InMemoryExporterError> {
+        self
             .metrics
             .lock()
-            .map(|metrics_guard| metrics_guard.iter().map(Self::clone_metrics).collect())
-            .map_err(InMemoryExporterError::from)?;
-        Ok(metrics)
+            .map_err(InMemoryExporterError::from)
+            .map(|metrics_guard| metrics_guard.iter().map(|(metric, scope)| {
+                (Self::clone_metric(metric), scope.clone())
+            })
+            .collect())
     }
 
     /// Clears the internal storage of finished metrics.
@@ -172,27 +171,13 @@ impl InMemoryMetricExporter {
             .map(|mut metrics_guard| metrics_guard.clear());
     }
 
-    fn clone_metrics(metric: &ResourceMetrics) -> ResourceMetrics {
-        ResourceMetrics {
-            resource: metric.resource.clone(),
-            scope_metrics: metric
-                .scope_metrics
-                .iter()
-                .map(|scope_metric| ScopeMetrics {
-                    scope: scope_metric.scope.clone(),
-                    metrics: scope_metric
-                        .metrics
-                        .iter()
-                        .map(|metric| Metric {
-                            name: metric.name.clone(),
-                            description: metric.description.clone(),
-                            unit: metric.unit.clone(),
-                            data: Self::clone_data(&metric.data),
-                        })
-                        .collect(),
-                })
-                .collect(),
-        }
+    fn clone_metric(metric: &Metric) -> Metric {
+        Metric {
+            name: metric.name.clone(),
+            description: metric.description.clone(),
+            unit: metric.unit.clone(),
+            data: Self::clone_data(&metric.data),
+        }        
     }
 
     fn clone_data(data: &AggregatedMetrics) -> AggregatedMetrics {
@@ -237,13 +222,12 @@ impl InMemoryMetricExporter {
 }
 
 impl PushMetricExporter for InMemoryMetricExporter {
-    async fn export(&self, metrics: &mut ResourceMetrics) -> OTelSdkResult {
-        self.metrics
-            .lock()
-            .map(|mut metrics_guard| {
-                metrics_guard.push_back(InMemoryMetricExporter::clone_metrics(metrics))
-            })
-            .map_err(|_| OTelSdkError::InternalFailure("Failed to lock metrics".to_string()))
+    async fn export(&self, batch: MetricBatch<'_>) -> OTelSdkResult {
+        let mut metrics = self.metrics.lock().map_err(|_| OTelSdkError::InternalFailure("Failed to lock metrics".to_string()))?;
+        metrics.extend(batch.map(|(metric, scope)| {
+            (InMemoryMetricExporter::clone_metric(metric), scope.clone())
+        }));
+        Ok(())            
     }
 
     fn force_flush(&self) -> OTelSdkResult {
@@ -260,5 +244,9 @@ impl PushMetricExporter for InMemoryMetricExporter {
 
     fn temporality(&self) -> Temporality {
         self.temporality
+    }
+    
+    fn set_resource(&mut self, resource: &Resource) {
+        self.resource = resource.clone();
     }
 }

@@ -1,4 +1,6 @@
 use chrono::{DateTime, Utc};
+use opentelemetry_sdk::metrics::exporter::MetricBatch;
+use opentelemetry_sdk::Resource;
 use core::{f64, fmt};
 use opentelemetry_sdk::metrics::data::{AggregatedMetrics, MetricData};
 use opentelemetry_sdk::metrics::Temporality;
@@ -6,7 +8,7 @@ use opentelemetry_sdk::{
     error::OTelSdkResult,
     metrics::{
         data::{
-            Gauge, GaugeDataPoint, Histogram, HistogramDataPoint, ResourceMetrics, ScopeMetrics,
+            Gauge, GaugeDataPoint, Histogram, HistogramDataPoint,
             Sum, SumDataPoint,
         },
         exporter::PushMetricExporter,
@@ -20,6 +22,7 @@ use std::time::Duration;
 pub struct MetricExporter {
     is_shutdown: atomic::AtomicBool,
     temporality: Temporality,
+    resource: Resource,
 }
 
 impl MetricExporter {
@@ -42,20 +45,20 @@ impl fmt::Debug for MetricExporter {
 
 impl PushMetricExporter for MetricExporter {
     /// Write Metrics to stdout
-    async fn export(&self, metrics: &mut ResourceMetrics) -> OTelSdkResult {
+    async fn export(&self, batch: MetricBatch<'_>) -> OTelSdkResult {
         if self.is_shutdown.load(atomic::Ordering::SeqCst) {
             Err(opentelemetry_sdk::error::OTelSdkError::AlreadyShutdown)
         } else {
             println!("Metrics");
             println!("Resource");
-            if let Some(schema_url) = metrics.resource.schema_url() {
+            if let Some(schema_url) = self.resource.schema_url() {
                 println!("\tResource SchemaUrl: {:?}", schema_url);
             }
 
-            metrics.resource.iter().for_each(|(k, v)| {
+            self.resource.iter().for_each(|(k, v)| {
                 println!("\t ->  {}={:?}", k, v);
             });
-            print_metrics(&metrics.scope_metrics);
+            print_metrics(batch);
             Ok(())
         }
     }
@@ -77,20 +80,23 @@ impl PushMetricExporter for MetricExporter {
     fn temporality(&self) -> Temporality {
         self.temporality
     }
+
+    fn set_resource(&mut self, resource: &Resource) {
+        self.resource = resource.clone()
+    }    
 }
 
-fn print_metrics(metrics: &[ScopeMetrics]) {
-    for (i, metric) in metrics.iter().enumerate() {
+fn print_metrics(batch: MetricBatch<'_>) {
+    for (i, (metric, scope)) in batch.enumerate() {
         println!("\tInstrumentation Scope #{}", i);
-        println!("\t\tName         : {}", &metric.scope.name());
-        if let Some(version) = &metric.scope.version() {
+        println!("\t\tName         : {}", &scope.name());
+        if let Some(version) = &scope.version() {
             println!("\t\tVersion  : {:?}", version);
         }
-        if let Some(schema_url) = &metric.scope.schema_url() {
+        if let Some(schema_url) = &scope.schema_url() {
             println!("\t\tSchemaUrl: {:?}", schema_url);
         }
-        metric
-            .scope
+        scope
             .attributes()
             .enumerate()
             .for_each(|(index, kv)| {
@@ -100,7 +106,7 @@ fn print_metrics(metrics: &[ScopeMetrics]) {
                 println!("\t\t\t ->  {}: {}", kv.key, kv.value);
             });
 
-        metric.metrics.iter().enumerate().for_each(|(i, metric)| {
+
             println!("Metric #{}", i);
             println!("\t\tName         : {}", &metric.name);
             println!("\t\tDescription  : {}", &metric.description);
@@ -133,7 +139,6 @@ fn print_metrics(metrics: &[ScopeMetrics]) {
                 AggregatedMetrics::U64(data) => print_info(data),
                 AggregatedMetrics::I64(data) => print_info(data),
             }
-        });
     }
 }
 
@@ -269,6 +274,7 @@ impl MetricExporterBuilder {
         MetricExporter {
             temporality: self.temporality.unwrap_or_default(),
             is_shutdown: atomic::AtomicBool::new(false),
+            resource: Resource::builder_empty().build()
         }
     }
 }
